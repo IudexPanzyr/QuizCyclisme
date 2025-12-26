@@ -38,8 +38,8 @@ jobs:
         run: flutter clean
 
       - name: Build web
-        run: flutter build web --release --base-href "/QuizCyclisme/" --dart-define=API_BASE=https://quizcyclisme.workers.dev
-        working-directory: app
+        run: flutter build web --release --base-href "/QuizCyclisme/" --dart-define=API_BASE=https://cycling-quiz-api.quizcyclisme.workers.dev
+
 
 
       - name: Upload artifact
