@@ -1,0 +1,23 @@
+# --- General ---
+.DS_Store
+Thumbs.db
+.vscode/
+
+# --- Flutter / Dart ---
+**/.dart_tool/
+**/.packages
+**/.pub/
+**/build/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.metadata
+
+# --- Node / Worker ---
+**/node_modules/
+**/.wrangler/
+**/wrangler-*.log
+
+# --- Env / secrets ---
+.env
+.env.*
+.dev.vars

@@ -1,0 +1,9 @@
+name = "cycling-quiz-api"
+main = "src/index.ts"
+compatibility_date = "2025-12-01"
+
+# Binding D1 (tu rempliras database_id après création)
+[[d1_databases]]
+binding = "DB"
+database_name = "cycling_quiz_db"
+database_id = "f89ef8de-60fe-4bf4-9c7e-c82e9c463c3d"
