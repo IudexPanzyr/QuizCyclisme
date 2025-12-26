@@ -42,6 +42,106 @@ async function ensurePlayerExists(env: Env, playerId: string): Promise<boolean> 
   return !!p;
 }
 
+type DuelRow = {
+  id: string;
+  code: string;
+  status: "lobby" | "active" | "finished";
+  total: number;
+  currentRound: number;
+  roundStartedAt?: number | null;
+  roundEndsAt?: number | null;
+  roundDurationMs?: number | null;
+};
+
+const DEFAULT_ROUND_DURATION_MS = 15000;
+const TIMEOUT_TEAM_ID = "__TIMEOUT__";
+
+// Tick “autoritaire” : si le round est expiré, on timeout les joueurs manquants et on avance.
+async function tickDuelById(env: Env, duelId: string): Promise<void> {
+  // On limite le nombre de boucles au cas où quelqu’un laisse un duel tourner longtemps.
+  for (let guard = 0; guard < 10; guard++) {
+    const duel = await env.DB.prepare(`
+      SELECT
+        id,
+        code,
+        status,
+        total,
+        current_round AS currentRound,
+        round_started_at AS roundStartedAt,
+        round_ends_at AS roundEndsAt,
+        round_duration_ms AS roundDurationMs
+      FROM duels
+      WHERE id=?1
+      LIMIT 1;
+    `).bind(duelId).first<DuelRow>();
+
+    if (!duel) return;
+    if (duel.status !== "active") return;
+
+    const now = Date.now();
+    const dur = Number(duel.roundDurationMs ?? DEFAULT_ROUND_DURATION_MS) || DEFAULT_ROUND_DURATION_MS;
+
+    // Si roundEndsAt pas initialisé (ancien duel, ou start incomplet), on l’initialise.
+    if (!duel.roundEndsAt) {
+      await env.DB.prepare(`
+        UPDATE duels
+        SET round_started_at=?2, round_ends_at=?3, round_duration_ms=COALESCE(round_duration_ms, ?4)
+        WHERE id=?1;
+      `).bind(duel.id, now, now + dur, dur).run();
+      return; // prochain poll fera le reste
+    }
+
+    // Pas expiré -> rien à faire
+    if (now <= duel.roundEndsAt) return;
+
+    // Expiré -> on met timeout pour les joueurs qui n’ont pas répondu à CE round
+    await env.DB.prepare(`
+      INSERT INTO duel_answers(duel_id, round_no, player_id, team_id, is_correct, answered_at)
+      SELECT
+        dp.duel_id,
+        ?2 AS round_no,
+        dp.player_id,
+        ?3 AS team_id,
+        0 AS is_correct,
+        ?4 AS answered_at
+      FROM duel_players dp
+      LEFT JOIN duel_answers da
+        ON da.duel_id = dp.duel_id
+       AND da.round_no = ?2
+       AND da.player_id = dp.player_id
+      WHERE dp.duel_id=?1
+        AND da.player_id IS NULL;
+    `).bind(duel.id, duel.currentRound, TIMEOUT_TEAM_ID, now).run();
+
+    // Maintenant tout le monde a une réponse (ou timeout) -> on avance
+    if (duel.currentRound >= duel.total) {
+      await env.DB.prepare(`
+        UPDATE duels
+        SET status='finished', finished_at=?2
+        WHERE id=?1;
+      `).bind(duel.id, now).run();
+      return;
+    }
+
+    await env.DB.prepare(`
+      UPDATE duels
+      SET current_round = current_round + 1,
+          round_started_at=?2,
+          round_ends_at=?3,
+          round_duration_ms=COALESCE(round_duration_ms, ?4)
+      WHERE id=?1;
+    `).bind(duel.id, now, now + dur, dur).run();
+
+    // continue la boucle : si le match a pris énormément de retard, on peut devoir timeout plusieurs rounds.
+  }
+}
+
+async function tickDuelByCode(env: Env, code: string): Promise<void> {
+  const row = await env.DB.prepare(`SELECT id FROM duels WHERE code=?1 LIMIT 1;`).bind(code).first<{ id: string }>();
+  if (!row) return;
+  await tickDuelById(env, row.id);
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
@@ -108,8 +208,6 @@ export default {
           ? excludeParam.split(",").map((s) => s.trim()).filter(Boolean)
           : [];
 
-        // Si on exclut tout, on évite un SQL foireux
-        // (on renvoie une erreur claire)
         if (exclude.length > 2000) {
           return json({ error: "Too many excluded ids" }, 400);
         }
@@ -139,7 +237,6 @@ export default {
         if (!row) return json({ error: "No more riders available" }, 404);
         return json({ rider: row });
       }
-
 
       // Vérifier la réponse (anti-triche)
       if (req.method === "POST" && url.pathname === "/answer") {
@@ -271,16 +368,20 @@ export default {
       }
 
       // -------------------------
-      // Duels V3 (polling)
+      // Duels (polling) + Timer serveur
       // -------------------------
 
       // Create duel lobby -> returns {code}
       if (req.method === "POST" && url.pathname === "/duel/create") {
-        type Body = { playerId?: string; total?: number };
+        type Body = { playerId?: string; total?: number; roundSeconds?: number };
         const body = await readJsonSafe<Body>(req);
 
         const playerId = (body?.playerId ?? "").trim();
         const total = body?.total ? Number(body.total) : 30;
+
+        // Optionnel: roundSeconds (par défaut 15)
+        const roundSecondsRaw = body?.roundSeconds ? Number(body.roundSeconds) : 15;
+        const roundDurationMs = Math.min(60, Math.max(5, roundSecondsRaw)) * 1000;
 
         if (!playerId) return json({ error: "Missing playerId" }, 400);
         if (!Number.isFinite(total) || total < 5 || total > 50) {
@@ -307,9 +408,9 @@ export default {
         const now = Date.now();
 
         await env.DB.prepare(`
-          INSERT INTO duels(id, code, status, total, current_round, created_at)
-          VALUES(?1, ?2, 'lobby', ?3, 1, ?4);
-        `).bind(duelId, code, total, now).run();
+          INSERT INTO duels(id, code, status, total, current_round, created_at, round_duration_ms)
+          VALUES(?1, ?2, 'lobby', ?3, 1, ?4, ?5);
+        `).bind(duelId, code, total, now, roundDurationMs).run();
 
         // host = side 1
         await env.DB.prepare(`
@@ -317,7 +418,7 @@ export default {
           VALUES(?1, ?2, ?3, 1);
         `).bind(duelId, playerId, now).run();
 
-        return json({ duelId, code, status: "lobby", total });
+        return json({ duelId, code, status: "lobby", total, roundDurationMs });
       }
 
       // Join duel lobby (NE démarre plus automatiquement)
@@ -362,7 +463,7 @@ export default {
         return json({ ok: true, code, status: "lobby" });
       }
 
-      // Host starts duel -> generate rounds + status=active
+      // Host starts duel -> generate rounds + status=active + init timer serveur
       if (req.method === "POST" && url.pathname === "/duel/start") {
         type Body = { playerId?: string; code?: string };
         const body = await readJsonSafe<Body>(req);
@@ -374,7 +475,7 @@ export default {
         if (!(await ensurePlayerExists(env, playerId))) return json({ error: "Unknown playerId" }, 404);
 
         const duel = await env.DB.prepare(`
-          SELECT id, status, total
+          SELECT id, status, total, round_duration_ms AS roundDurationMs
           FROM duels WHERE code=?1 LIMIT 1;
         `).bind(code).first<any>();
 
@@ -405,7 +506,7 @@ export default {
         `).bind(duel.id).first();
         if (alreadyRounds) return json({ error: "Duel already initialized" }, 400);
 
-        // Generate N rounds
+        // Generate N rounds (riders uniques)
         const rows = await env.DB.prepare(`
           SELECT r.id AS riderId, rtc.team_id AS correctTeamId
           FROM riders r
@@ -425,13 +526,20 @@ export default {
         }
 
         const now = Date.now();
+        const dur = Number(duel.roundDurationMs ?? DEFAULT_ROUND_DURATION_MS) || DEFAULT_ROUND_DURATION_MS;
+
         await env.DB.prepare(`
           UPDATE duels
-          SET status='active', started_at=?2, current_round=1
+          SET status='active',
+              started_at=?2,
+              current_round=1,
+              round_started_at=?2,
+              round_ends_at=?3,
+              round_duration_ms=COALESCE(round_duration_ms, ?4)
           WHERE id=?1;
-        `).bind(duel.id, now).run();
+        `).bind(duel.id, now, now + dur, dur).run();
 
-        return json({ ok: true, status: "active" });
+        return json({ ok: true, status: "active", roundEndsAt: now + dur, roundDurationMs: dur, serverTime: now });
       }
 
       // -------- Dynamic duel routes: /duel/{code}/... --------
@@ -443,10 +551,21 @@ export default {
         const playerId = (url.searchParams.get("playerId") ?? "").trim();
         if (!code || !playerId) return json({ error: "Missing code or playerId" }, 400);
 
+        // Timer serveur : applique les timeouts / avance si nécessaire
+        await tickDuelByCode(env, code);
+
         const duel = await env.DB.prepare(`
-          SELECT id, code, status, total, current_round AS currentRound
+          SELECT
+            id,
+            code,
+            status,
+            total,
+            current_round AS currentRound,
+            round_started_at AS roundStartedAt,
+            round_ends_at AS roundEndsAt,
+            round_duration_ms AS roundDurationMs
           FROM duels WHERE code=?1 LIMIT 1;
-        `).bind(code).first<any>();
+        `).bind(code).first<DuelRow>();
 
         if (!duel) return json({ error: "Unknown code" }, 404);
 
@@ -511,7 +630,6 @@ export default {
           if (p1Score > p2Score) winnerPlayerId = p1?.playerId ?? null;
           else if (p2Score > p1Score) winnerPlayerId = p2?.playerId ?? null;
 
-          // store (idempotent)
           await env.DB.prepare(`
             INSERT INTO duel_results(duel_id, winner_player_id, p1_score, p2_score, total, created_at)
             VALUES(?1, ?2, ?3, ?4, ?5, ?6)
@@ -530,12 +648,18 @@ export default {
           };
         }
 
+        const now = Date.now();
+
         return json({
+          serverTime: now,
           duel: {
             code: duel.code,
             status: duel.status,
             total: duel.total,
             currentRound: duel.currentRound,
+            roundStartedAt: duel.roundStartedAt ?? null,
+            roundEndsAt: duel.roundEndsAt ?? null,
+            roundDurationMs: duel.roundDurationMs ?? DEFAULT_ROUND_DURATION_MS,
           },
           players: playersRes.results,
           scores: scoresRes.results,
@@ -551,8 +675,16 @@ export default {
         const playerId = (url.searchParams.get("playerId") ?? "").trim();
         if (!code || !playerId) return json({ error: "Missing code or playerId" }, 400);
 
+        await tickDuelByCode(env, code);
+
         const duel = await env.DB.prepare(`
-          SELECT id, status, total, current_round AS currentRound
+          SELECT
+            id,
+            status,
+            total,
+            current_round AS currentRound,
+            round_ends_at AS roundEndsAt,
+            round_duration_ms AS roundDurationMs
           FROM duels WHERE code=?1 LIMIT 1;
         `).bind(code).first<any>();
 
@@ -569,30 +701,47 @@ export default {
         `).bind(duel.id, duel.currentRound).first();
 
         if (!round) return json({ error: "Round not found" }, 404);
-        return json({ round });
+
+        return json({
+          serverTime: Date.now(),
+          roundEndsAt: duel.roundEndsAt ?? null,
+          roundDurationMs: duel.roundDurationMs ?? DEFAULT_ROUND_DURATION_MS,
+          round,
+        });
       }
 
       // POST /duel/{code}/answer
       if (req.method === "POST" && parts.length === 3 && parts[0] === "duel" && parts[2] === "answer") {
         const code = parts[1].toUpperCase();
 
-        type Body = { playerId?: string; teamId?: string };
+        type Body = { playerId?: string; teamId?: string; roundNo?: number };
         const body = await readJsonSafe<Body>(req);
 
         const playerId = (body?.playerId ?? "").trim();
-        const teamId = (body?.teamId ?? "").trim();
+        const teamIdRaw = (body?.teamId ?? "").trim();
+        const clientRoundNo = body?.roundNo != null ? Number(body.roundNo) : null;
 
-        if (!code || !playerId || !teamId) {
+        if (!code || !playerId || !teamIdRaw) {
           return json({ error: "Missing code/playerId/teamId" }, 400);
         }
 
+        await tickDuelByCode(env, code);
+
         const duel = await env.DB.prepare(`
-          SELECT id, status, total, current_round AS currentRound
+          SELECT
+            id, status, total, current_round AS currentRound,
+            round_ends_at AS roundEndsAt,
+            round_duration_ms AS roundDurationMs
           FROM duels WHERE code=?1 LIMIT 1;
         `).bind(code).first<any>();
 
         if (!duel) return json({ error: "Unknown code" }, 404);
         if (duel.status !== "active") return json({ error: "Duel not active" }, 400);
+
+        // Si le client envoie roundNo, on protège contre les réponses “en retard” sur un mauvais round
+        if (clientRoundNo != null && Number.isFinite(clientRoundNo) && clientRoundNo !== duel.currentRound) {
+          return json({ error: "Stale round", currentRound: duel.currentRound }, 409);
+        }
 
         const inDuel = await env.DB.prepare(`
           SELECT 1 FROM duel_players WHERE duel_id=?1 AND player_id=?2 LIMIT 1;
@@ -609,53 +758,36 @@ export default {
 
         if (!r) return json({ error: "Round not found" }, 404);
 
-        const isTimeout = teamId === "__TIMEOUT__";
-        const isCorrect = !isTimeout && (r.correctTeamId === teamId);
         const now = Date.now();
+        const roundEndsAt = Number(duel.roundEndsAt ?? 0);
+
+        // Si expiré côté serveur -> réponse devient timeout (même si le client envoie autre chose)
+        const expired = roundEndsAt > 0 && now > roundEndsAt;
+
+        const effectiveTeamId = expired ? TIMEOUT_TEAM_ID : teamIdRaw;
+        const isTimeout = effectiveTeamId === TIMEOUT_TEAM_ID;
+        const isCorrect = !isTimeout && (r.correctTeamId === effectiveTeamId);
 
         // Insert answer. If already answered, primary key will conflict.
         try {
           await env.DB.prepare(`
             INSERT INTO duel_answers(duel_id, round_no, player_id, team_id, is_correct, answered_at)
             VALUES(?1, ?2, ?3, ?4, ?5, ?6);
-          `).bind(duel.id, duel.currentRound, playerId, teamId, isCorrect ? 1 : 0, now).run();
+          `).bind(duel.id, duel.currentRound, playerId, effectiveTeamId, isCorrect ? 1 : 0, now).run();
         } catch {
           return json({ error: "Already answered this round" }, 400);
         }
 
-        // Advance if all players answered
-        const playerCountRow = await env.DB.prepare(`
-          SELECT COUNT(*) AS c FROM duel_players WHERE duel_id=?1;
-        `).bind(duel.id).first<{ c: number }>();
-
-        const answeredCountRow = await env.DB.prepare(`
-          SELECT COUNT(*) AS c FROM duel_answers WHERE duel_id=?1 AND round_no=?2;
-        `).bind(duel.id, duel.currentRound).first<{ c: number }>();
-
-        const playerCount = Number(playerCountRow?.c ?? 0);
-        const answeredCount = Number(answeredCountRow?.c ?? 0);
-
-        let finished = false;
-
-        if (playerCount > 0 && answeredCount >= playerCount) {
-          if (duel.currentRound >= duel.total) {
-            finished = true;
-            await env.DB.prepare(`
-              UPDATE duels SET status='finished', finished_at=?2 WHERE id=?1;
-            `).bind(duel.id, now).run();
-          } else {
-            await env.DB.prepare(`
-              UPDATE duels SET current_round = current_round + 1 WHERE id=?1;
-            `).bind(duel.id).run();
-          }
-        }
+        // Après une réponse, on retick tout de suite : si l’autre a déjà répondu, ça avance instantanément.
+        await tickDuelById(env, duel.id);
 
         return json({
           ok: true,
           correct: isCorrect,
           correctTeamName: r.correctTeamName,
-          finished,
           timeout: isTimeout,
+          expired,
+          serverTime: Date.now(),
         });
       }
 

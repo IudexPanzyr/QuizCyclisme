@@ -55,7 +55,11 @@ class _DuelPageState extends State<DuelPage> {
       final res = await http.post(
         Uri.parse('${widget.apiBase}/duel/create'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'playerId': widget.playerId, 'total': 30}),
+        body: jsonEncode({
+          'playerId': widget.playerId,
+          'total': 30,
+          'roundSeconds': 15, // optionnel si tu l’as gardé côté serveur
+        }),
       );
 
       if (res.statusCode != 200) {
@@ -169,11 +173,19 @@ class _DuelPageState extends State<DuelPage> {
   }
 
   List<Map<String, dynamic>> _players() {
-    return (stateJson?['players'] as List?)?.cast<dynamic>().map((e) => (e as Map).cast<String, dynamic>()).toList() ?? [];
+    return (stateJson?['players'] as List?)
+            ?.cast<dynamic>()
+            .map((e) => (e as Map).cast<String, dynamic>())
+            .toList() ??
+        [];
   }
 
   List<Map<String, dynamic>> _scores() {
-    return (stateJson?['scores'] as List?)?.cast<dynamic>().map((e) => (e as Map).cast<String, dynamic>()).toList() ?? [];
+    return (stateJson?['scores'] as List?)
+            ?.cast<dynamic>()
+            .map((e) => (e as Map).cast<String, dynamic>())
+            .toList() ??
+        [];
   }
 
   @override
@@ -360,7 +372,7 @@ class DuelMatchPage extends StatefulWidget {
   State<DuelMatchPage> createState() => _DuelMatchPageState();
 }
 
-class _DuelMatchPageState extends State<DuelMatchPage> {
+class _DuelMatchPageState extends State<DuelMatchPage> with WidgetsBindingObserver {
   bool loading = true;
   String? error;
 
@@ -370,25 +382,44 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
 
   String? selectedTeamId;
 
-  Timer? timer;
+  Timer? pollTimer;
 
-  // ---- TIMER ROUND 15s ----
-  Timer? roundTimer;
-  int timeLeft = 15;
+  // ----- Timer “affichage” basé serveur -----
+  Timer? uiTimer;
+  int timeLeft = 0;
+
+  // pour éviter des re-start inutiles
   int? lastRoundNo;
-  bool sendingTimeout = false;
+
+  // offset local -> server (ms)
+  int serverOffsetMs = 0; // serverNow = localNow + offset
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _boot();
   }
 
   @override
   void dispose() {
-    timer?.cancel();
-    roundTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    pollTimer?.cancel();
+    uiTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Si on va en arrière-plan: stop le ticker UI (sinon il continue/saute)
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      uiTimer?.cancel();
+      return;
+    }
+    // À la reprise, on repoll et on relance un ticker recalculé depuis roundEndsAt
+    if (state == AppLifecycleState.resumed) {
+      poll();
+    }
   }
 
   Future<void> _boot() async {
@@ -408,69 +439,59 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
   }
 
   void _startPolling() {
-    timer?.cancel();
-    timer = Timer.periodic(const Duration(milliseconds: 900), (_) => poll());
+    pollTimer?.cancel();
+    pollTimer = Timer.periodic(const Duration(milliseconds: 900), (_) => poll());
     poll();
   }
 
-  void _startRoundTimer() {
-    roundTimer?.cancel();
-    timeLeft = 15;
-    sendingTimeout = false;
+  int _serverNowMs() => DateTime.now().millisecondsSinceEpoch + serverOffsetMs;
 
-    roundTimer = Timer.periodic(const Duration(seconds: 1), (t) async {
-      if (!mounted) return;
-
-      if (timeLeft <= 1) {
-        t.cancel();
-        await _sendTimeoutIfNeeded();
-      } else {
-        setState(() => timeLeft -= 1);
-      }
-    });
-
-    if (mounted) setState(() {});
+  void _updateServerOffsetFromState() {
+    final st = stateJson;
+    if (st == null) return;
+    final serverTime = (st['serverTime'] as num?)?.toInt();
+    if (serverTime == null) return;
+    final localNow = DateTime.now().millisecondsSinceEpoch;
+    serverOffsetMs = serverTime - localNow;
   }
 
-  Future<void> _sendTimeoutIfNeeded() async {
-    if (sendingTimeout) return;
+  void _startUiCountdown({required int roundEndsAtMs}) {
+    uiTimer?.cancel();
 
-    final duel = stateJson?['duel'] as Map<String, dynamic>?;
-    final status = (duel?['status'] as String?) ?? '';
-    final meAnswered = ((stateJson?['me'] as Map?)?['answeredThisRound'] == true);
-
-    if (status != 'active' || meAnswered) return;
-
-    sendingTimeout = true;
-
-    try {
-      await http.post(
-        Uri.parse('${widget.apiBase}/duel/${widget.code}/answer'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'playerId': widget.playerId, 'teamId': '__TIMEOUT__'}),
-      );
-
+    void tick() {
+      final now = _serverNowMs();
+      final msLeft = roundEndsAtMs - now;
+      final secLeft = (msLeft <= 0) ? 0 : ((msLeft + 999) ~/ 1000); // ceil
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("⏱️ Temps écoulé (réponse vide)"),
-          duration: Duration(milliseconds: 900),
-        ),
-      );
-
-      selectedTeamId = null;
-      await poll();
-    } catch (_) {
-      // ignore
+      setState(() => timeLeft = secLeft);
+      if (secLeft <= 0) {
+        uiTimer?.cancel();
+      }
     }
+
+    tick();
+    uiTimer = Timer.periodic(const Duration(milliseconds: 250), (_) => tick());
+  }
+
+  void _stopUiCountdown() {
+    uiTimer?.cancel();
+    if (mounted) setState(() => timeLeft = 0);
   }
 
   List<Map<String, dynamic>> _players() {
-    return (stateJson?['players'] as List?)?.cast<dynamic>().map((e) => (e as Map).cast<String, dynamic>()).toList() ?? [];
+    return (stateJson?['players'] as List?)
+            ?.cast<dynamic>()
+            .map((e) => (e as Map).cast<String, dynamic>())
+            .toList() ??
+        [];
   }
 
   List<Map<String, dynamic>> _scores() {
-    return (stateJson?['scores'] as List?)?.cast<dynamic>().map((e) => (e as Map).cast<String, dynamic>()).toList() ?? [];
+    return (stateJson?['scores'] as List?)
+            ?.cast<dynamic>()
+            .map((e) => (e as Map).cast<String, dynamic>())
+            .toList() ??
+        [];
   }
 
   Future<void> poll() async {
@@ -481,9 +502,11 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
       if (sRes.statusCode != 200) return;
 
       stateJson = jsonDecode(sRes.body) as Map<String, dynamic>;
+      _updateServerOffsetFromState();
 
       final duel = stateJson?['duel'] as Map<String, dynamic>?;
       final status = (duel?['status'] as String?) ?? 'lobby';
+      final currentRound = (duel?['currentRound'] as num?)?.toInt();
 
       if (status == 'active') {
         final qRes = await http.get(Uri.parse(
@@ -494,24 +517,29 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
         }
       }
 
-      // ---- gestion du timer par round ----
       final meAnswered = ((stateJson?['me'] as Map?)?['answeredThisRound'] == true);
-      final round = (questionJson?['round'] as Map?)?.cast<String, dynamic>();
-      final roundNo = (round?['roundNo'] as num?)?.toInt();
 
-      if (status == 'active' && roundNo != null) {
+      // On récupère roundNo depuis questionJson (source fiable UI)
+      final round = (questionJson?['round'] as Map?)?.cast<String, dynamic>();
+      final roundNo = (round?['roundNo'] as num?)?.toInt() ?? currentRound;
+
+      // Récupère roundEndsAt depuis /state (duel.roundEndsAt)
+      final roundEndsAtMs = (duel?['roundEndsAt'] as num?)?.toInt();
+
+      // Gestion du timer UI: dépend du round + answered
+      if (status == 'active' && roundNo != null && roundEndsAtMs != null) {
         if (lastRoundNo != roundNo) {
           lastRoundNo = roundNo;
-          if (!meAnswered) {
-            _startRoundTimer();
-          } else {
-            roundTimer?.cancel();
-          }
+          selectedTeamId = null; // reset choix au changement de round
+        }
+
+        if (meAnswered) {
+          _stopUiCountdown();
         } else {
-          if (meAnswered) roundTimer?.cancel();
+          _startUiCountdown(roundEndsAtMs: roundEndsAtMs);
         }
       } else {
-        roundTimer?.cancel();
+        _stopUiCountdown();
       }
 
       if (mounted) setState(() {});
@@ -532,7 +560,8 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
     final teamId = selectedTeamId;
     if (teamId == null) return;
 
-    roundTimer?.cancel();
+    final duel = stateJson?['duel'] as Map<String, dynamic>?;
+    final currentRound = (duel?['currentRound'] as num?)?.toInt();
 
     setState(() {
       loading = true;
@@ -543,8 +572,25 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
       final res = await http.post(
         Uri.parse('${widget.apiBase}/duel/${widget.code}/answer'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'playerId': widget.playerId, 'teamId': teamId}),
+        body: jsonEncode({
+          'playerId': widget.playerId,
+          'teamId': teamId,
+          if (currentRound != null) 'roundNo': currentRound, // protection “stale round”
+        }),
       );
+
+      if (res.statusCode == 409) {
+        // round périmé -> on repoll et on laisse le serveur trancher
+        await poll();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("⏱️ Trop tard : round déjà passé"),
+            duration: Duration(milliseconds: 900),
+          ),
+        );
+        return;
+      }
 
       if (res.statusCode != 200) {
         throw Exception("Answer: ${res.statusCode} ${res.body}");
@@ -553,11 +599,16 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
       final j = jsonDecode(res.body) as Map<String, dynamic>;
       final correct = j['correct'] == true;
       final correctName = (j['correctTeamName'] as String?) ?? '';
+      final expired = j['expired'] == true;
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(correct ? "✅ Correct !" : "❌ Faux. Bonne équipe : $correctName"),
+          content: Text(
+            expired
+                ? "⏱️ Trop tard (timeout serveur)"
+                : (correct ? "✅ Correct !" : "❌ Faux. Bonne équipe : $correctName"),
+          ),
           duration: const Duration(milliseconds: 900),
         ),
       );
@@ -566,7 +617,6 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
       await poll();
     } catch (e) {
       setState(() => error = e.toString());
-      _startRoundTimer();
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -657,7 +707,8 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
                   _scoreboard(context),
                   const SizedBox(height: 10),
 
-                  if (status == 'active') Text("⏱️ Temps restant : $timeLeft s"),
+                  if (status == 'active')
+                    Text(meAnswered ? "✅ Réponse envoyée" : "⏱️ Temps restant : $timeLeft s"),
                   const SizedBox(height: 16),
 
                   if (status == 'lobby') ...[

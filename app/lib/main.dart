@@ -304,7 +304,7 @@ class QuizPage extends StatefulWidget {
   State<QuizPage> createState() => _QuizPageState();
 }
 
-class _QuizPageState extends State<QuizPage> {
+class _QuizPageState extends State<QuizPage> with WidgetsBindingObserver {
   bool loading = true;
   String? error;
 
@@ -318,14 +318,18 @@ class _QuizPageState extends State<QuizPage> {
   int score = 0;
   int questionIndex = 0;
 
-  // ---- TIMER 15s ----
-  Timer? questionTimer;
-  int timeLeft = 15;
-  bool locked = false;
+  // ---- Timer "propre" basé sur une deadline ----
+  Timer? uiTimer;
+  int timeLeft = 0;
+  int _endsAtMs = 0;
+
+  bool locked = false; // empêche double submit / double next
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
     playerId = widget.playerId;
     playerName = widget.playerName;
     _boot();
@@ -333,27 +337,47 @@ class _QuizPageState extends State<QuizPage> {
 
   @override
   void dispose() {
-    questionTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    uiTimer?.cancel();
     super.dispose();
   }
 
-  void _startQuestionTimer() {
-    questionTimer?.cancel();
-    timeLeft = 15;
-    locked = false;
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Stop le ticker quand l'app n'est pas active
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      uiTimer?.cancel();
+      return;
+    }
+    // À la reprise, on recalcule le timeLeft depuis endsAt (pas depuis un compteur)
+    if (state == AppLifecycleState.resumed) {
+      _startQuestionTimerFromEndsAt();
+    }
+  }
 
-    questionTimer = Timer.periodic(const Duration(seconds: 1), (t) async {
+  void _startNewQuestionDeadline() {
+    _endsAtMs = DateTime.now().millisecondsSinceEpoch + 15 * 1000;
+    _startQuestionTimerFromEndsAt();
+  }
+
+  void _startQuestionTimerFromEndsAt() {
+    uiTimer?.cancel();
+
+    void tick() {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final msLeft = _endsAtMs - now;
+      final secLeft = (msLeft <= 0) ? 0 : ((msLeft + 999) ~/ 1000); // ceil
       if (!mounted) return;
+      setState(() => timeLeft = secLeft);
 
-      if (timeLeft <= 1) {
-        t.cancel();
-        await _onTimeout();
-      } else {
-        setState(() => timeLeft -= 1);
+      if (secLeft <= 0) {
+        uiTimer?.cancel();
+        _onTimeout();
       }
-    });
+    }
 
-    if (mounted) setState(() {});
+    tick();
+    uiTimer = Timer.periodic(const Duration(milliseconds: 250), (_) => tick());
   }
 
   Future<void> _onTimeout() async {
@@ -368,10 +392,15 @@ class _QuizPageState extends State<QuizPage> {
       ),
     );
 
+    await _advanceToNextQuestion();
+  }
+
+  Future<void> _advanceToNextQuestion() async {
+    // avance l'index, termine la session si besoin, sinon charge question suivante
     questionIndex += 1;
 
     if (questionIndex >= sessionTotal) {
-      questionTimer?.cancel();
+      uiTimer?.cancel();
       await submitAttempt(playerId: playerId, score: score, total: sessionTotal);
 
       if (!mounted) return;
@@ -424,22 +453,26 @@ class _QuizPageState extends State<QuizPage> {
 
   Future<void> _newQuestion() async {
     selectedTeamId = null;
+    locked = false;
+
     current = await fetchQuestion();
-    _startQuestionTimer();
+
+    _startNewQuestionDeadline();
+
     if (mounted) setState(() {});
   }
 
   Future<void> _submit() async {
     if (locked) return;
     locked = true;
-    questionTimer?.cancel();
+    uiTimer?.cancel();
 
     final q = current;
     final teamId = selectedTeamId;
 
     if (q == null || teamId == null) {
       locked = false;
-      _startQuestionTimer();
+      _startQuestionTimerFromEndsAt();
       return;
     }
 
@@ -459,49 +492,21 @@ class _QuizPageState extends State<QuizPage> {
         ),
       );
 
-      questionIndex += 1;
-
-      if (questionIndex >= sessionTotal) {
-        questionTimer?.cancel();
-        await submitAttempt(playerId: playerId, score: score, total: sessionTotal);
-
-        if (!mounted) return;
-        await showDialog<void>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text("Session terminée"),
-            content: Text("Ton score : $score / $sessionTotal"),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text("OK"),
-              ),
-            ],
-          ),
-        );
-
-        if (!mounted) return;
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => LeaderboardPage(
-              myPlayerId: playerId,
-              total: sessionTotal,
-            ),
-          ),
-        );
-
-        score = 0;
-        questionIndex = 0;
-      }
-
-      await _newQuestion();
+      await _advanceToNextQuestion();
     } catch (e) {
       setState(() => error = e.toString());
       locked = false;
-      _startQuestionTimer();
+      _startQuestionTimerFromEndsAt();
     } finally {
       if (mounted) setState(() => loading = false);
     }
+  }
+
+  Future<void> _pass() async {
+    if (locked) return;
+    locked = true;
+    uiTimer?.cancel();
+    await _advanceToNextQuestion();
   }
 
   Future<void> _changePseudo() async {
@@ -626,7 +631,7 @@ class _QuizPageState extends State<QuizPage> {
                     ),
                     const SizedBox(height: 12),
                     FilledButton(
-                      onPressed: (loading || selectedTeamId == null) ? null : _submit,
+                      onPressed: (loading || selectedTeamId == null || locked) ? null : _submit,
                       child: loading
                           ? const SizedBox(
                               height: 18,
@@ -637,7 +642,7 @@ class _QuizPageState extends State<QuizPage> {
                     ),
                     const SizedBox(height: 8),
                     TextButton(
-                      onPressed: loading ? null : _newQuestion,
+                      onPressed: (loading || locked) ? null : _pass,
                       child: const Text('Passer (question suivante)'),
                     ),
                   ],
