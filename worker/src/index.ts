@@ -101,18 +101,45 @@ export default {
       }
 
       // Question aléatoire: renvoie un coureur (sans révéler l'équipe)
+      // Supporte: /question?exclude=id1,id2,id3
       if (req.method === "GET" && url.pathname === "/question") {
-        const row = await env.DB.prepare(`
+        const excludeParam = (url.searchParams.get("exclude") ?? "").trim();
+        const exclude = excludeParam
+          ? excludeParam.split(",").map((s) => s.trim()).filter(Boolean)
+          : [];
+
+        // Si on exclut tout, on évite un SQL foireux
+        // (on renvoie une erreur claire)
+        if (exclude.length > 2000) {
+          return json({ error: "Too many excluded ids" }, 400);
+        }
+
+        let sql = `
           SELECT r.id AS riderId, r.full_name AS riderName, r.nation AS nation
           FROM riders r
           JOIN rider_team_current rtc ON rtc.rider_id = r.id
+        `;
+
+        const params: any[] = [];
+
+        if (exclude.length > 0) {
+          const placeholders = exclude.map((_, i) => `?${i + 1}`).join(",");
+          sql += ` WHERE r.id NOT IN (${placeholders}) `;
+          params.push(...exclude);
+        }
+
+        sql += `
           ORDER BY RANDOM()
           LIMIT 1;
-        `).first();
+        `;
 
-        if (!row) return json({ error: "No riders in DB" }, 404);
+        const stmt = env.DB.prepare(sql);
+        const row = exclude.length > 0 ? await stmt.bind(...params).first() : await stmt.first();
+
+        if (!row) return json({ error: "No more riders available" }, 404);
         return json({ rider: row });
       }
+
 
       // Vérifier la réponse (anti-triche)
       if (req.method === "POST" && url.pathname === "/answer") {

@@ -1,10 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'config.dart';
-import 'duel_page.dart';
 
+import 'config.dart';
+import 'duel_page.dart' as duel;
 
 const int sessionTotal = 30;
 
@@ -64,7 +66,7 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       error = e.toString();
     } finally {
-      setState(() => loading = false);
+      if (mounted) setState(() => loading = false);
     }
   }
 
@@ -95,7 +97,7 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       setState(() => error = e.toString());
     } finally {
-      setState(() => loading = false);
+      if (mounted) setState(() => loading = false);
     }
   }
 
@@ -129,7 +131,7 @@ class _HomePageState extends State<HomePage> {
 
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => DuelPage(
+        builder: (_) => duel.DuelPage(
           apiBase: apiBase,
           playerId: p.playerId,
           playerName: p.name,
@@ -177,7 +179,6 @@ class _HomePageState extends State<HomePage> {
                         style: Theme.of(context).textTheme.headlineSmall,
                       ),
                       const SizedBox(height: 18),
-
                       FilledButton.icon(
                         icon: const Icon(Icons.person),
                         label: const Padding(
@@ -186,9 +187,7 @@ class _HomePageState extends State<HomePage> {
                         ),
                         onPressed: (p == null) ? null : _openSolo,
                       ),
-
                       const SizedBox(height: 12),
-
                       FilledButton.icon(
                         icon: const Icon(Icons.sports_kabaddi),
                         label: const Padding(
@@ -197,7 +196,6 @@ class _HomePageState extends State<HomePage> {
                         ),
                         onPressed: (p == null) ? null : _openDuels,
                       ),
-
                       const SizedBox(height: 18),
                       Text(
                         "Pseudo: ${p?.name ?? '—'}",
@@ -293,7 +291,6 @@ class QuizPage extends StatefulWidget {
   final String playerId;
   final String playerName;
 
-  /// callback pour changer pseudo (met à jour Home + prefs)
   final Future<PlayerInfo> Function(String newName) onPlayerUpdated;
 
   const QuizPage({
@@ -321,12 +318,92 @@ class _QuizPageState extends State<QuizPage> {
   int score = 0;
   int questionIndex = 0;
 
+  // ---- TIMER 15s ----
+  Timer? questionTimer;
+  int timeLeft = 15;
+  bool locked = false;
+
   @override
   void initState() {
     super.initState();
     playerId = widget.playerId;
     playerName = widget.playerName;
     _boot();
+  }
+
+  @override
+  void dispose() {
+    questionTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startQuestionTimer() {
+    questionTimer?.cancel();
+    timeLeft = 15;
+    locked = false;
+
+    questionTimer = Timer.periodic(const Duration(seconds: 1), (t) async {
+      if (!mounted) return;
+
+      if (timeLeft <= 1) {
+        t.cancel();
+        await _onTimeout();
+      } else {
+        setState(() => timeLeft -= 1);
+      }
+    });
+
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _onTimeout() async {
+    if (locked) return;
+    locked = true;
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text("⏱️ Temps écoulé !"),
+        duration: Duration(milliseconds: 900),
+      ),
+    );
+
+    questionIndex += 1;
+
+    if (questionIndex >= sessionTotal) {
+      questionTimer?.cancel();
+      await submitAttempt(playerId: playerId, score: score, total: sessionTotal);
+
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("Session terminée"),
+          content: Text("Ton score : $score / $sessionTotal"),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text("OK"),
+            ),
+          ],
+        ),
+      );
+
+      if (!mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => LeaderboardPage(
+            myPlayerId: playerId,
+            total: sessionTotal,
+          ),
+        ),
+      );
+
+      score = 0;
+      questionIndex = 0;
+    }
+
+    await _newQuestion();
   }
 
   Future<void> _boot() async {
@@ -341,26 +418,35 @@ class _QuizPageState extends State<QuizPage> {
     } catch (e) {
       error = e.toString();
     } finally {
-      setState(() => loading = false);
+      if (mounted) setState(() => loading = false);
     }
   }
 
   Future<void> _newQuestion() async {
     selectedTeamId = null;
     current = await fetchQuestion();
-    setState(() {});
+    _startQuestionTimer();
+    if (mounted) setState(() {});
   }
 
   Future<void> _submit() async {
+    if (locked) return;
+    locked = true;
+    questionTimer?.cancel();
+
     final q = current;
     final teamId = selectedTeamId;
-    if (q == null || teamId == null) return;
+
+    if (q == null || teamId == null) {
+      locked = false;
+      _startQuestionTimer();
+      return;
+    }
 
     setState(() => loading = true);
 
     try {
       final res = await checkAnswer(riderId: q.riderId, teamId: teamId);
-
       if (res.correct) score += 1;
 
       if (!mounted) return;
@@ -376,6 +462,7 @@ class _QuizPageState extends State<QuizPage> {
       questionIndex += 1;
 
       if (questionIndex >= sessionTotal) {
+        questionTimer?.cancel();
         await submitAttempt(playerId: playerId, score: score, total: sessionTotal);
 
         if (!mounted) return;
@@ -410,8 +497,10 @@ class _QuizPageState extends State<QuizPage> {
       await _newQuestion();
     } catch (e) {
       setState(() => error = e.toString());
+      locked = false;
+      _startQuestionTimer();
     } finally {
-      setState(() => loading = false);
+      if (mounted) setState(() => loading = false);
     }
   }
 
@@ -429,7 +518,7 @@ class _QuizPageState extends State<QuizPage> {
         const SnackBar(content: Text("Pseudo mis à jour ✅")),
       );
     } finally {
-      setState(() => loading = false);
+      if (mounted) setState(() => loading = false);
     }
   }
 
@@ -484,6 +573,8 @@ class _QuizPageState extends State<QuizPage> {
                     ),
                   const SizedBox(height: 12),
                   _ScoreCard(score: score, current: questionIndex, total: sessionTotal),
+                  const SizedBox(height: 10),
+                  Text("⏱️ Temps restant : $timeLeft s"),
                   const SizedBox(height: 16),
                   if (q != null) ...[
                     Text(q.riderName, style: Theme.of(context).textTheme.headlineMedium),
@@ -501,7 +592,6 @@ class _QuizPageState extends State<QuizPage> {
                           value: t.id,
                           child: Row(
                             children: [
-                              // place pour l'image du maillot (jerseyUrl)
                               SizedBox(
                                 width: 28,
                                 height: 18,
@@ -627,7 +717,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
     } catch (e) {
       error = e.toString();
     } finally {
-      setState(() => loading = false);
+      if (mounted) setState(() => loading = false);
     }
   }
 

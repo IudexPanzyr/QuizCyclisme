@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -123,7 +124,7 @@ class _DuelPageState extends State<DuelPage> {
         throw Exception('Start failed: ${res.statusCode} ${res.body}');
       }
 
-      await poll(); // refresh state immediately
+      await poll();
     } catch (e) {
       setState(() => error = e.toString());
     } finally {
@@ -149,7 +150,6 @@ class _DuelPageState extends State<DuelPage> {
       final duel = stateJson?['duel'] as Map<String, dynamic>?;
       final status = (duel?['status'] as String?) ?? 'lobby';
 
-      // Auto-open match screen when active
       if (status == 'active' && !openedMatch) {
         openedMatch = true;
         Navigator.of(context).push(
@@ -168,6 +168,14 @@ class _DuelPageState extends State<DuelPage> {
     }
   }
 
+  List<Map<String, dynamic>> _players() {
+    return (stateJson?['players'] as List?)?.cast<dynamic>().map((e) => (e as Map).cast<String, dynamic>()).toList() ?? [];
+  }
+
+  List<Map<String, dynamic>> _scores() {
+    return (stateJson?['scores'] as List?)?.cast<dynamic>().map((e) => (e as Map).cast<String, dynamic>()).toList() ?? [];
+  }
+
   @override
   Widget build(BuildContext context) {
     final duel = stateJson?['duel'] as Map<String, dynamic>?;
@@ -175,15 +183,60 @@ class _DuelPageState extends State<DuelPage> {
     final total = (duel?['total'] as num?)?.toInt() ?? 30;
     final currentRound = (duel?['currentRound'] as num?)?.toInt() ?? 1;
 
-    final players = (stateJson?['players'] as List?)?.cast<dynamic>() ?? const [];
+    final players = _players();
+    final scores = _scores();
     final meId = widget.playerId;
 
     bool isHost = false;
     for (final p in players) {
-      final m = (p as Map).cast<String, dynamic>();
-      if (m['playerId'] == meId && (m['side'] as num?)?.toInt() == 1) {
+      if (p['playerId'] == meId && (p['side'] as num?)?.toInt() == 1) {
         isHost = true;
       }
+    }
+
+    int scoreOf(String playerId) {
+      final row = scores.firstWhere(
+        (s) => (s['playerId'] as String?) == playerId,
+        orElse: () => const {},
+      );
+      return (row['score'] as num?)?.toInt() ?? 0;
+    }
+
+    Widget scoreboard() {
+      if (players.isEmpty) return const SizedBox.shrink();
+      final p1 = players.firstWhere((p) => (p['side'] as num?)?.toInt() == 1, orElse: () => const {});
+      final p2 = players.firstWhere((p) => (p['side'] as num?)?.toInt() == 2, orElse: () => const {});
+      final p1Id = (p1['playerId'] as String?) ?? '';
+      final p2Id = (p2['playerId'] as String?) ?? '';
+      final p1Name = (p1['name'] as String?) ?? 'Hôte';
+      final p2Name = (p2['name'] as String?) ?? (players.length < 2 ? 'En attente…' : 'Joueur 2');
+
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        ),
+        child: Row(
+          children: [
+            Expanded(child: Text(p1Name, style: Theme.of(context).textTheme.titleMedium)),
+            Text("${scoreOf(p1Id)}", style: Theme.of(context).textTheme.titleLarge),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 10),
+              child: Text("—"),
+            ),
+            Text("${p2Id.isEmpty ? 0 : scoreOf(p2Id)}", style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                p2Name,
+                textAlign: TextAlign.end,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+          ],
+        ),
+      );
     }
 
     return Scaffold(
@@ -197,7 +250,6 @@ class _DuelPageState extends State<DuelPage> {
               Text(error!, style: const TextStyle(color: Colors.red)),
               const SizedBox(height: 12),
             ],
-
             Row(
               children: [
                 Expanded(
@@ -216,16 +268,12 @@ class _DuelPageState extends State<DuelPage> {
                 ),
               ],
             ),
-
             const SizedBox(height: 10),
-
             FilledButton(
               onPressed: busy ? null : createLobby,
               child: const Text("Créer un lobby"),
             ),
-
             const SizedBox(height: 18),
-
             if (code != null) ...[
               Text("Code: $code", style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 6),
@@ -234,10 +282,12 @@ class _DuelPageState extends State<DuelPage> {
               Text("Round: $currentRound / $total"),
               const SizedBox(height: 12),
 
+              scoreboard(),
+              const SizedBox(height: 12),
+
               ...players.map((p) {
-                final m = (p as Map).cast<String, dynamic>();
-                final name = (m['name'] as String?) ?? '???';
-                final side = (m['side'] as num?)?.toInt() ?? 0;
+                final name = (p['name'] as String?) ?? '???';
+                final side = (p['side'] as num?)?.toInt() ?? 0;
                 return Text("${side == 1 ? 'Hôte' : 'Joueur'}: $name");
               }),
 
@@ -271,20 +321,20 @@ class _DuelPageState extends State<DuelPage> {
 
 /// ---------------- MATCH SCREEN (play) ----------------
 
-class Team {
+class DuelTeam {
   final String id;
   final String name;
   final String categoryCode;
   final String? jerseyUrl;
 
-  Team({
+  DuelTeam({
     required this.id,
     required this.name,
     required this.categoryCode,
     required this.jerseyUrl,
   });
 
-  factory Team.fromJson(Map<String, dynamic> j) => Team(
+  factory DuelTeam.fromJson(Map<String, dynamic> j) => DuelTeam(
         id: j['id'] as String,
         name: j['name'] as String,
         categoryCode: (j['categoryCode'] as String?) ?? '',
@@ -314,12 +364,19 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
   bool loading = true;
   String? error;
 
-  List<Team> teams = [];
+  List<DuelTeam> teams = [];
   Map<String, dynamic>? stateJson;
   Map<String, dynamic>? questionJson;
 
   String? selectedTeamId;
+
   Timer? timer;
+
+  // ---- TIMER ROUND 15s ----
+  Timer? roundTimer;
+  int timeLeft = 15;
+  int? lastRoundNo;
+  bool sendingTimeout = false;
 
   @override
   void initState() {
@@ -330,6 +387,7 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
   @override
   void dispose() {
     timer?.cancel();
+    roundTimer?.cancel();
     super.dispose();
   }
 
@@ -355,6 +413,66 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
     poll();
   }
 
+  void _startRoundTimer() {
+    roundTimer?.cancel();
+    timeLeft = 15;
+    sendingTimeout = false;
+
+    roundTimer = Timer.periodic(const Duration(seconds: 1), (t) async {
+      if (!mounted) return;
+
+      if (timeLeft <= 1) {
+        t.cancel();
+        await _sendTimeoutIfNeeded();
+      } else {
+        setState(() => timeLeft -= 1);
+      }
+    });
+
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _sendTimeoutIfNeeded() async {
+    if (sendingTimeout) return;
+
+    final duel = stateJson?['duel'] as Map<String, dynamic>?;
+    final status = (duel?['status'] as String?) ?? '';
+    final meAnswered = ((stateJson?['me'] as Map?)?['answeredThisRound'] == true);
+
+    if (status != 'active' || meAnswered) return;
+
+    sendingTimeout = true;
+
+    try {
+      await http.post(
+        Uri.parse('${widget.apiBase}/duel/${widget.code}/answer'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'playerId': widget.playerId, 'teamId': '__TIMEOUT__'}),
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("⏱️ Temps écoulé (réponse vide)"),
+          duration: Duration(milliseconds: 900),
+        ),
+      );
+
+      selectedTeamId = null;
+      await poll();
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  List<Map<String, dynamic>> _players() {
+    return (stateJson?['players'] as List?)?.cast<dynamic>().map((e) => (e as Map).cast<String, dynamic>()).toList() ?? [];
+  }
+
+  List<Map<String, dynamic>> _scores() {
+    return (stateJson?['scores'] as List?)?.cast<dynamic>().map((e) => (e as Map).cast<String, dynamic>()).toList() ?? [];
+  }
+
   Future<void> poll() async {
     try {
       final sRes = await http.get(Uri.parse(
@@ -376,23 +494,45 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
         }
       }
 
+      // ---- gestion du timer par round ----
+      final meAnswered = ((stateJson?['me'] as Map?)?['answeredThisRound'] == true);
+      final round = (questionJson?['round'] as Map?)?.cast<String, dynamic>();
+      final roundNo = (round?['roundNo'] as num?)?.toInt();
+
+      if (status == 'active' && roundNo != null) {
+        if (lastRoundNo != roundNo) {
+          lastRoundNo = roundNo;
+          if (!meAnswered) {
+            _startRoundTimer();
+          } else {
+            roundTimer?.cancel();
+          }
+        } else {
+          if (meAnswered) roundTimer?.cancel();
+        }
+      } else {
+        roundTimer?.cancel();
+      }
+
       if (mounted) setState(() {});
     } catch (_) {
       // ignore
     }
   }
 
-  Future<List<Team>> _fetchTeams() async {
+  Future<List<DuelTeam>> _fetchTeams() async {
     final res = await http.get(Uri.parse('${widget.apiBase}/teams'));
     if (res.statusCode != 200) throw Exception("Teams: ${res.statusCode} ${res.body}");
     final decoded = jsonDecode(res.body) as Map<String, dynamic>;
     final list = (decoded['teams'] as List).cast<Map<String, dynamic>>();
-    return list.map(Team.fromJson).toList();
+    return list.map(DuelTeam.fromJson).toList();
   }
 
   Future<void> _submitAnswer() async {
     final teamId = selectedTeamId;
     if (teamId == null) return;
+
+    roundTimer?.cancel();
 
     setState(() {
       loading = true;
@@ -422,13 +562,65 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
         ),
       );
 
-      selectedTeamId = null; // reset pour le prochain round
+      selectedTeamId = null;
       await poll();
     } catch (e) {
       setState(() => error = e.toString());
+      _startRoundTimer();
     } finally {
       if (mounted) setState(() => loading = false);
     }
+  }
+
+  Widget _scoreboard(BuildContext context) {
+    final players = _players();
+    final scores = _scores();
+
+    int scoreOf(String playerId) {
+      final row = scores.firstWhere(
+        (s) => (s['playerId'] as String?) == playerId,
+        orElse: () => const {},
+      );
+      return (row['score'] as num?)?.toInt() ?? 0;
+    }
+
+    if (players.isEmpty) return const SizedBox.shrink();
+
+    final p1 = players.firstWhere((p) => (p['side'] as num?)?.toInt() == 1, orElse: () => const {});
+    final p2 = players.firstWhere((p) => (p['side'] as num?)?.toInt() == 2, orElse: () => const {});
+
+    final p1Id = (p1['playerId'] as String?) ?? '';
+    final p2Id = (p2['playerId'] as String?) ?? '';
+
+    final p1Name = (p1['name'] as String?) ?? 'P1';
+    final p2Name = (p2['name'] as String?) ?? 'P2';
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      ),
+      child: Row(
+        children: [
+          Expanded(child: Text(p1Name, style: Theme.of(context).textTheme.titleMedium)),
+          Text("${scoreOf(p1Id)}", style: Theme.of(context).textTheme.titleLarge),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 10),
+            child: Text("—"),
+          ),
+          Text("${scoreOf(p2Id)}", style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              p2Name,
+              textAlign: TextAlign.end,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -456,12 +648,18 @@ class _DuelMatchPageState extends State<DuelMatchPage> {
                     Text(error!, style: const TextStyle(color: Colors.red)),
                     const SizedBox(height: 12),
                   ],
+
                   Text("Status: $status"),
                   const SizedBox(height: 6),
                   Text("Round: $currentRound / $total"),
+                  const SizedBox(height: 10),
+
+                  _scoreboard(context),
+                  const SizedBox(height: 10),
+
+                  if (status == 'active') Text("⏱️ Temps restant : $timeLeft s"),
                   const SizedBox(height: 16),
 
-                  // ---- ICI : affichage selon status ----
                   if (status == 'lobby') ...[
                     const Text("En attente que la partie démarre…"),
                   ] else if (status == 'finished') ...[
