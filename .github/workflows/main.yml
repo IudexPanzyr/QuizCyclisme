@@ -33,9 +33,14 @@ jobs:
         working-directory: app
         run: flutter pub get
 
-      - name: Build web
+      - name: Clean
         working-directory: app
-        run: flutter build web --release --base-href "/QuizCyclisme/" --dart-define=API_BASE=${{ secrets.API_BASE }}
+        run: flutter clean
+
+      - name: Build web
+        run: flutter build web --release --base-href "/QuizCyclisme/" --dart-define=API_BASE=https://quizcyclisme.workers.dev
+        working-directory: app
+
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
