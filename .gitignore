@@ -1,23 +1,22 @@
-# --- General ---
+# OS / IDE
 .DS_Store
-Thumbs.db
 .vscode/
+.idea/
 
-# --- Flutter / Dart ---
-**/.dart_tool/
-**/.packages
-**/.pub/
-**/build/
-**/.flutter-plugins
-**/.flutter-plugins-dependencies
-**/.metadata
+# Flutter / Dart
+.dart_tool/
+.build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
 
-# --- Node / Worker ---
-**/node_modules/
-**/.wrangler/
-**/wrangler-*.log
+# Flutter web build output
+app/build/
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
 
-# --- Env / secrets ---
-.env
-.env.*
-.dev.vars
+# Cloudflare Wrangler
+worker/.wrangler/
+worker/node_modules/
+worker/.dev.vars
