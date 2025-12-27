@@ -560,68 +560,114 @@ class _DuelMatchPageState extends State<DuelMatchPage> with WidgetsBindingObserv
     return list.map(DuelTeam.fromJson).toList();
   }
 
-  Future<void> _submitAnswer() async {
-    final teamId = selectedTeamId;
-    if (teamId == null) return;
+void _showAnswerSnack({
+  required bool correct,
+  required String correctTeamName,
+  String? correctTeamId,
+  bool expired = false,
+}) {
+  final byId = {for (final t in teams) t.id: t};
+  final jerseyUrl = (correctTeamId != null) ? byId[correctTeamId]?.jerseyUrl : null;
 
-    final roundNo = _currentRoundNoFromQuestion(); // IMPORTANT: roundNo UI
-    setState(() {
-      loading = true;
-      error = null;
-    });
+  final text = expired
+      ? "⏱️ Trop tard (timeout serveur)"
+      : (correct ? "✅ Correct !" : "❌ Faux. Bonne équipe : $correctTeamName");
 
-    try {
-      final res = await http.post(
-        Uri.parse('${widget.apiBase}/duel/${widget.code}/answer'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'playerId': widget.playerId,
-          'teamId': teamId,
-          if (roundNo != null) 'roundNo': roundNo,
-        }),
-      );
+  // évite l'empilement
+  ScaffoldMessenger.of(context).clearSnackBars();
 
-      if (res.statusCode == 409) {
-        await poll();
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("⏱️ Trop tard : round déjà passé"),
-            duration: Duration(milliseconds: 900),
-          ),
-        );
-        return;
-      }
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      duration: const Duration(seconds: 3), // <-- plus long
+      behavior: SnackBarBehavior.floating,
+      content: Row(
+        children: [
+          if (jerseyUrl != null) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: Image.network(
+                jerseyUrl,
+                width: 34,
+                height: 22,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => const SizedBox(width: 34, height: 22),
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
+          Expanded(child: Text(text)),
+        ],
+      ),
+      action: SnackBarAction(
+        label: "OK",
+        onPressed: () => ScaffoldMessenger.of(context).hideCurrentSnackBar(),
+      ),
+    ),
+  );
+}
 
-      if (res.statusCode != 200) {
-        throw Exception("Answer: ${res.statusCode} ${res.body}");
-      }
+Future<void> _submitAnswer() async {
+  final teamId = selectedTeamId;
+  if (teamId == null) return;
 
-      final j = jsonDecode(res.body) as Map<String, dynamic>;
-      final correct = j['correct'] == true;
-      final correctName = (j['correctTeamName'] as String?) ?? '';
-      final expired = j['expired'] == true;
+  final roundNo = _currentRoundNoFromQuestion(); // IMPORTANT: roundNo UI
+  setState(() {
+    loading = true;
+    error = null;
+  });
 
+  try {
+    final res = await http.post(
+      Uri.parse('${widget.apiBase}/duel/${widget.code}/answer'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'playerId': widget.playerId,
+        'teamId': teamId,
+        if (roundNo != null) 'roundNo': roundNo,
+      }),
+    );
+
+    if (res.statusCode == 409) {
+      await poll();
       if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            expired
-                ? "⏱️ Trop tard (timeout serveur)"
-                : (correct ? "✅ Correct !" : "❌ Faux. Bonne équipe : $correctName"),
-          ),
-          duration: const Duration(milliseconds: 900),
+        const SnackBar(
+          content: Text("⏱️ Trop tard : round déjà passé"),
+          duration: Duration(seconds: 2),
         ),
       );
-
-      selectedTeamId = null;
-      await poll();
-    } catch (e) {
-      setState(() => error = e.toString());
-    } finally {
-      if (mounted) setState(() => loading = false);
+      return;
     }
+
+    if (res.statusCode != 200) {
+      throw Exception("Answer: ${res.statusCode} ${res.body}");
+    }
+
+    final j = jsonDecode(res.body) as Map<String, dynamic>;
+    final correct = j['correct'] == true;
+    final correctName = (j['correctTeamName'] as String?) ?? '';
+    final correctTeamId = (j['correctTeamId'] as String?); // <-- NEW
+    final expired = j['expired'] == true;
+
+    if (!mounted) return;
+
+    _showAnswerSnack(
+      correct: correct,
+      correctTeamName: correctName,
+      correctTeamId: correctTeamId,
+      expired: expired,
+    );
+
+    selectedTeamId = null;
+    await poll();
+  } catch (e) {
+    setState(() => error = e.toString());
+  } finally {
+    if (mounted) setState(() => loading = false);
   }
+}
+
 
   Widget _scoreboard(BuildContext context) {
     final players = _players();

@@ -788,12 +788,13 @@ export default {
         return json({
           ok: true,
           correct: isCorrect,
+          correctTeamId: r.correctTeamId,
           correctTeamName: r.correctTeamName,
           timeout: isTimeout,
           expired,
           serverTime: Date.now(),
         });
-      }
+
 
       return json({ error: "Not found" }, 404);
     } catch (e: any) {

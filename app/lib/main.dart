@@ -254,15 +254,22 @@ class RiderQuestion {
 
 class AnswerResult {
   final bool correct;
+  final String correctTeamId;
   final String correctTeamName;
 
-  AnswerResult({required this.correct, required this.correctTeamName});
+  AnswerResult({
+    required this.correct,
+    required this.correctTeamId,
+    required this.correctTeamName,
+  });
 
   factory AnswerResult.fromJson(Map<String, dynamic> j) => AnswerResult(
         correct: j['correct'] as bool,
+        correctTeamId: (j['correctTeamId'] as String?) ?? '',
         correctTeamName: (j['correctTeamName'] as String?) ?? '',
       );
 }
+
 
 class LeaderRow {
   final String playerId;
@@ -463,45 +470,80 @@ class _QuizPageState extends State<QuizPage> with WidgetsBindingObserver {
     if (mounted) setState(() {});
   }
 
-  Future<void> _submit() async {
-    if (locked) return;
-    locked = true;
-    uiTimer?.cancel();
+void _showSoloAnswerSnack(AnswerResult res) {
+  final byId = {for (final t in teams) t.id: t};
+  final jerseyUrl = byId[res.correctTeamId]?.jerseyUrl;
 
-    final q = current;
-    final teamId = selectedTeamId;
+  ScaffoldMessenger.of(context).clearSnackBars();
 
-    if (q == null || teamId == null) {
-      locked = false;
-      _startQuestionTimerFromEndsAt();
-      return;
-    }
-
-    setState(() => loading = true);
-
-    try {
-      final res = await checkAnswer(riderId: q.riderId, teamId: teamId);
-      if (res.correct) score += 1;
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            res.correct ? '✅ Correct !' : '❌ Faux. Bonne équipe : ${res.correctTeamName}',
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(
+      duration: const Duration(seconds: 3), // <-- plus long
+      behavior: SnackBarBehavior.floating,
+      content: Row(
+        children: [
+          if ((jerseyUrl ?? '').isNotEmpty) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: Image.network(
+                jerseyUrl!,
+                width: 34,
+                height: 22,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => const SizedBox(width: 34, height: 22),
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
+          Expanded(
+            child: Text(
+              res.correct ? '✅ Correct !' : '❌ Faux. Bonne équipe : ${res.correctTeamName}',
+            ),
           ),
-          duration: const Duration(milliseconds: 900),
-        ),
-      );
+        ],
+      ),
+      action: SnackBarAction(
+        label: "OK",
+        onPressed: () => ScaffoldMessenger.of(context).hideCurrentSnackBar(),
+      ),
+    ),
+  );
+}
 
-      await _advanceToNextQuestion();
-    } catch (e) {
-      setState(() => error = e.toString());
-      locked = false;
-      _startQuestionTimerFromEndsAt();
-    } finally {
-      if (mounted) setState(() => loading = false);
+    Future<void> _submit() async {
+      if (locked) return;
+      locked = true;
+      uiTimer?.cancel();
+
+      final q = current;
+      final teamId = selectedTeamId;
+
+      if (q == null || teamId == null) {
+        locked = false;
+        _startQuestionTimerFromEndsAt();
+        return;
+      }
+
+      setState(() => loading = true);
+
+      try {
+        final res = await checkAnswer(riderId: q.riderId, teamId: teamId);
+        if (res.correct) score += 1;
+
+        if (!mounted) return;
+
+        _showSoloAnswerSnack(res); // <-- maillot + durée plus longue
+
+        await _advanceToNextQuestion();
+      } catch (e) {
+        setState(() => error = e.toString());
+        locked = false;
+        _startQuestionTimerFromEndsAt();
+      } finally {
+        if (mounted) setState(() => loading = false);
+      }
     }
-  }
+
 
   Future<void> _pass() async {
     if (locked) return;
