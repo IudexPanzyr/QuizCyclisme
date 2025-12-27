@@ -63,6 +63,7 @@ class _HomePageState extends State<HomePage> {
 
     try {
       player = await ensurePlayer(context);
+      debugPrint("PLAYER => id=${player!.playerId} name=${player!.name}");
     } catch (e) {
       error = e.toString();
     } finally {
