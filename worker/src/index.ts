@@ -762,7 +762,7 @@ export default {
         const now = Date.now();
         const roundEndsAt = Number(duel.roundEndsAt ?? 0);
 
-        // Si expiré côté serveur -> réponse devient timeout (même si le client envoie autre chose)
+        // Si expiré côté serveur -> réponse devient timeout
         const expired = roundEndsAt > 0 && now > roundEndsAt;
 
         const clientWantsTimeout = teamIdRaw === TIMEOUT_TEAM_ID;
@@ -777,12 +777,11 @@ export default {
             INSERT INTO duel_answers(duel_id, round_no, player_id, team_id, is_correct, answered_at)
             VALUES(?1, ?2, ?3, ?4, ?5, ?6);
           `).bind(duel.id, duel.currentRound, playerId, effectiveTeamId, isCorrect ? 1 : 0, now).run();
-
         } catch {
           return json({ error: "Already answered this round" }, 400);
         }
 
-        // Après une réponse, on retick tout de suite : si l’autre a déjà répondu, ça avance instantanément.
+        // Après une réponse, on retick : si l’autre a déjà répondu, ça avance instantanément.
         await tickDuelById(env, duel.id);
 
         return json({
@@ -794,8 +793,9 @@ export default {
           expired,
           serverTime: Date.now(),
         });
+      }
 
-
+      // Aucune route match
       return json({ error: "Not found" }, 404);
     } catch (e: any) {
       return json({ error: e?.message ?? "Server error" }, 500);

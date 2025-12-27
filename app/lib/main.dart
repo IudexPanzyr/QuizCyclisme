@@ -7,6 +7,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'config.dart';
 import 'duel_page.dart' as duel;
+import 'package:flutter_svg/flutter_svg.dart';
+
 
 const int sessionTotal = 30;
 
@@ -17,15 +19,106 @@ void main() {
 class CyclingQuizApp extends StatelessWidget {
   const CyclingQuizApp({super.key});
 
+  static const cBlue = Color(0xFF48ABE8);
+  static const cRed = Color(0xFFF42E49);
+  static const cDark = Color(0xFF2E2528);
+  static const cYellow = Color(0xFFF4DE3D);
+  static const cGreen = Color(0xFF4FC57B);
+
+  ColorScheme _scheme() {
+    return ColorScheme(
+      brightness: Brightness.light,
+      primary: cBlue,
+      onPrimary: Colors.white,
+      secondary: cGreen,
+      onSecondary: cDark,
+      tertiary: cYellow,
+      onTertiary: cDark,
+      error: cRed,
+      onError: Colors.white,
+      surface: const Color(0xFFF8F9FB),
+      onSurface: cDark,
+      surfaceContainerHighest: const Color(0xFFEFF1F4),
+      onSurfaceVariant: const Color(0xFF4A4345),
+      outline: const Color(0xFFDBDEE3),
+      shadow: Colors.black,
+      inverseSurface: cDark,
+      onInverseSurface: Colors.white,
+      inversePrimary: cBlue,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final scheme = _scheme();
+
     return MaterialApp(
-      title: 'Cycling Quiz',
-      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
+      title: 'QuizCyclisme',
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: scheme,
+        scaffoldBackgroundColor: scheme.surface,
+
+        appBarTheme: AppBarTheme(
+          backgroundColor: scheme.surface,
+          surfaceTintColor: scheme.surface,
+          foregroundColor: scheme.onSurface,
+          elevation: 0,
+          centerTitle: true,
+        ),
+
+        snackBarTheme: SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: scheme.inverseSurface,
+          contentTextStyle: TextStyle(color: scheme.onInverseSurface),
+        ),
+
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+          ),
+        ),
+
+        inputDecorationTheme: InputDecorationTheme(
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+        ),
+      ),
       home: const HomePage(),
     );
   }
 }
+
+class AppBrandTitle extends StatelessWidget {
+  final bool showText;
+  const AppBrandTitle({super.key, this.showText = true});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SvgPicture.asset(
+          'assets/logo_quizcyclisme.svg',
+          height: 26,
+        ),
+        if (showText) ...[
+          const SizedBox(width: 10),
+          Text(
+            "QuizCyclisme",
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: cs.onSurface,
+              letterSpacing: 0.2,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
 
 class PlayerInfo {
   final String playerId;
@@ -147,7 +240,7 @@ class _HomePageState extends State<HomePage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Cycling Quiz"),
+        title: const AppBrandTitle(showText: true), // ou false si tu veux logo seul
         actions: [
           if (p != null)
             TextButton(
