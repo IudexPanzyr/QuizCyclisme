@@ -180,6 +180,7 @@ class _HomePageState extends State<HomePage> {
                         style: Theme.of(context).textTheme.headlineSmall,
                       ),
                       const SizedBox(height: 18),
+
                       FilledButton.icon(
                         icon: const Icon(Icons.person),
                         label: const Padding(
@@ -189,6 +190,7 @@ class _HomePageState extends State<HomePage> {
                         onPressed: (p == null) ? null : _openSolo,
                       ),
                       const SizedBox(height: 12),
+
                       FilledButton.icon(
                         icon: const Icon(Icons.sports_kabaddi),
                         label: const Padding(
@@ -197,6 +199,28 @@ class _HomePageState extends State<HomePage> {
                         ),
                         onPressed: (p == null) ? null : _openDuels,
                       ),
+                      const SizedBox(height: 12),
+
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.leaderboard),
+                        label: const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 14),
+                          child: Text("Leaderboard"),
+                        ),
+                        onPressed: (p == null)
+                            ? null
+                            : () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => LeaderboardPage(
+                                      myPlayerId: p.playerId,
+                                      total: sessionTotal,
+                                    ),
+                                  ),
+                                );
+                              },
+                      ),
+
                       const SizedBox(height: 18),
                       Text(
                         "Pseudo: ${p?.name ?? '—'}",
@@ -209,7 +233,8 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
-}
+} // <-- IMPORTANT: ferme bien la classe _HomePageState
+
 
 /// -------- SOLO QUIZ PAGE --------
 
@@ -474,11 +499,14 @@ void _showSoloAnswerSnack(AnswerResult res) {
   final byId = {for (final t in teams) t.id: t};
   final jerseyUrl = byId[res.correctTeamId]?.jerseyUrl;
 
+  if (!mounted) return;
+
+  // évite une pile de snackbars
   ScaffoldMessenger.of(context).clearSnackBars();
 
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
-      duration: const Duration(seconds: 3), // <-- plus long
+      duration: const Duration(seconds: 3),
       behavior: SnackBarBehavior.floating,
       content: Row(
         children: [
@@ -584,22 +612,6 @@ void _showSoloAnswerSnack(AnswerResult res) {
               playerName,
               style: const TextStyle(color: Colors.white),
             ),
-          ),
-          IconButton(
-            onPressed: loading
-                ? null
-                : () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => LeaderboardPage(
-                          myPlayerId: playerId,
-                          total: sessionTotal,
-                        ),
-                      ),
-                    );
-                  },
-            icon: const Icon(Icons.leaderboard),
-            tooltip: "Leaderboard",
           ),
         ],
       ),
