@@ -101,17 +101,18 @@ async function tickDuelById(env: Env, duelId: string): Promise<void> {
         dp.duel_id,
         ?2 AS round_no,
         dp.player_id,
-        ?3 AS team_id,
+        NULL AS team_id,
         0 AS is_correct,
-        ?4 AS answered_at
+        ?3 AS answered_at
       FROM duel_players dp
       LEFT JOIN duel_answers da
         ON da.duel_id = dp.duel_id
-       AND da.round_no = ?2
-       AND da.player_id = dp.player_id
+      AND da.round_no = ?2
+      AND da.player_id = dp.player_id
       WHERE dp.duel_id=?1
         AND da.player_id IS NULL;
-    `).bind(duel.id, duel.currentRound, TIMEOUT_TEAM_ID, now).run();
+    `).bind(duel.id, duel.currentRound, now).run();
+
 
     // Maintenant tout le monde a une réponse (ou timeout) -> on avance
     if (duel.currentRound >= duel.total) {
@@ -764,8 +765,10 @@ export default {
         // Si expiré côté serveur -> réponse devient timeout (même si le client envoie autre chose)
         const expired = roundEndsAt > 0 && now > roundEndsAt;
 
-        const effectiveTeamId = expired ? TIMEOUT_TEAM_ID : teamIdRaw;
-        const isTimeout = effectiveTeamId === TIMEOUT_TEAM_ID;
+        const clientWantsTimeout = teamIdRaw === TIMEOUT_TEAM_ID;
+        const isTimeout = expired || clientWantsTimeout;
+
+        const effectiveTeamId: string | null = isTimeout ? null : teamIdRaw;
         const isCorrect = !isTimeout && (r.correctTeamId === effectiveTeamId);
 
         // Insert answer. If already answered, primary key will conflict.
@@ -774,6 +777,7 @@ export default {
             INSERT INTO duel_answers(duel_id, round_no, player_id, team_id, is_correct, answered_at)
             VALUES(?1, ?2, ?3, ?4, ?5, ?6);
           `).bind(duel.id, duel.currentRound, playerId, effectiveTeamId, isCorrect ? 1 : 0, now).run();
+
         } catch {
           return json({ error: "Already answered this round" }, 400);
         }
